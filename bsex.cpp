@@ -79,8 +79,8 @@ static void keygen (const std::string &baseName)
 }
 
 
-static void encrypt (const std::string &signBaseName, const std::string &wrapBaseName,
-    std::ostream &fileOut)
+static void encrypt (const std::string &signBaseName,
+    const std::string &wrapBaseName, std::ostream &fileOut)
 {
     Botan::AutoSeeded_RNG PRNG;
 
@@ -158,8 +158,8 @@ static void encrypt (const std::string &signBaseName, const std::string &wrapBas
 }
 
 
-static void decrypt (const std::string &wrapBaseName, const std::string &signBaseName,
-    std::istream &fileIn, bool verify = false)
+static void decrypt (const std::string &wrapBaseName,
+    const std::string &signBaseName, std::istream &fileIn, bool verify = false)
 {
     Botan::AutoSeeded_RNG PRNG;
 
@@ -233,6 +233,77 @@ static void decrypt (const std::string &wrapBaseName, const std::string &signBas
 }
 
 
+static void makesig (const std::string &signBaseName,
+    const std::string &fileName)
+{
+    std::ifstream fileIn(fileName, std::ios_base::in | std::ios_base::binary);
+
+    Botan::AutoSeeded_RNG PRNG;
+    std::unique_ptr<Botan::Private_Key> SignKey(
+        Botan::PKCS8::load_key(signBaseName + "_priv_ed25519.pem", PRNG));
+    Botan::PK_Signer Signer(*SignKey.get(), PRNG, "SHA-512");
+
+    uint32_t u32SigSize;
+    u32SigSize = Signer.signature_length();
+    std::vector<uint8_t> Signature(u32SigSize);
+    fprintf(stderr, "sigsize=%u\n", u32SigSize);
+
+    const size_t sizeBlock = 1048576 * 4;  // 4 MiB
+    std::vector<uint8_t> SignBlock(sizeBlock);
+
+    while (fileIn.good())
+    {
+        fileIn.read(reinterpret_cast<char *> (SignBlock.data()), SignBlock.size());
+        Signer.update(SignBlock.data(), fileIn.gcount());
+    }
+
+    Signature = Signer.signature(PRNG);
+    // signature
+    std::cout.write(reinterpret_cast<char *> (&u32SigSize), sizeof(u32SigSize));
+    if (!std::cout.good())
+        throw std::range_error("failed to write signature size");
+    std::cout.write(reinterpret_cast<char *> (Signature.data()), Signature.size());
+    if (!std::cout.good())
+        throw std::range_error("failed to write signature");
+}
+
+
+static void checksig (const std::string &signBaseName,
+    const std::string &fileName)
+{
+    std::ifstream fileIn(fileName, std::ios_base::in | std::ios_base::binary);
+
+    Botan::AutoSeeded_RNG PRNG;
+    std::unique_ptr<Botan::Public_Key> SignKey(
+        Botan::X509::load_key(signBaseName + "_pub_ed25519.pem"));
+    Botan::PK_Verifier Verifier(*SignKey.get(), "SHA-512");
+
+    uint32_t u32SigSize;
+    std::cin.read(reinterpret_cast<char *> (&u32SigSize), sizeof(u32SigSize));
+    if (!std::cin.good())
+        throw std::range_error("failed to read signature size");
+    std::vector<uint8_t> Signature(u32SigSize);
+    fprintf(stderr, "sigsize=%u\n", u32SigSize);
+    std::cin.read(reinterpret_cast<char *> (Signature.data()), Signature.size());
+    if (!std::cin.good())
+        throw std::range_error("failed to read signature");
+
+    const size_t sizeBlock = 1048576 * 4;  // 4 MiB
+    std::vector<uint8_t> SignBlock(sizeBlock);
+
+    while (fileIn.good())
+    {
+        fileIn.read(reinterpret_cast<char *> (SignBlock.data()), SignBlock.size());
+        Verifier.update(SignBlock.data(), fileIn.gcount());
+    }
+
+    if (Verifier.check_signature(Signature))
+        std::cerr << "signature OK" << std::endl;
+    else
+        throw std::domain_error("signature check failed");
+}
+
+
 static void print_help (const char *execname)
 {
     std::cerr << execname << " command args..." << std::endl;
@@ -240,6 +311,8 @@ static void print_help (const char *execname)
     std::cerr << "\tencrypt <own basename> <recipient basename> [output filename]" << std::endl;
     std::cerr << "\tdecrypt <own basename> <sender basename> [input filename]" << std::endl;
     std::cerr << "\tverify <own basename> <sender basename> [input filename]" << std::endl;
+    std::cerr << "\tmakesig <own basename> <file to sign>" << std::endl;
+    std::cerr << "\tchecksig <sender basename> <signed file>" << std::endl;
 }
 
 
@@ -281,6 +354,10 @@ int main (int argc, char *argv[])
                 std::ios_base::in | std::ios_base::binary);
             decrypt(std::string(argv[2]), std::string(argv[3]), fileIn, true);
         }
+        else if (Cmd == "makesig" && argc == 4)
+            makesig(std::string(argv[2]), std::string(argv[3]));
+        else if (Cmd == "checksig" && argc == 4)
+            checksig(std::string(argv[2]), std::string(argv[3]));
         else
             print_help(argv[0]);
     }
