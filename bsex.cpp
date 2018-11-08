@@ -28,6 +28,9 @@
 */
 
 
+#include <termios.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -51,7 +54,7 @@
 #include <botan/ctr.h>
 
 
-static void keygen (const std::string &baseName)
+static void keygen (const std::string &baseName, const std::string &passphrase)
 {
     Botan::AutoSeeded_RNG PRNG;
 
@@ -64,7 +67,8 @@ static void keygen (const std::string &baseName)
     std::ofstream PrivFileRSA(baseName + "_priv_rsa.pem",
         std::ios_base::out | std::ios_base::binary);
     PubFileRSA << Botan::X509::PEM_encode(KeyPairRSA);
-    PrivFileRSA << Botan::PKCS8::PEM_encode(KeyPairRSA);
+    // unwrap key is encrypted
+    PrivFileRSA << Botan::PKCS8::PEM_encode(KeyPairRSA, PRNG, passphrase);
 
     Botan::Ed25519_PrivateKey KeyPairEd25519(PRNG);
     if (!KeyPairEd25519.check_key(PRNG, true))
@@ -136,13 +140,14 @@ static void encrypt (const std::string &signBaseName,
         throw std::range_error("failed to write signature");
 
     const size_t sizeBlock = 1048576 * 4;  // 4 MiB
+    std::vector<uint8_t> DataBlock(sizeBlock);
     Botan::secure_vector<uint8_t> CipherBlock(sizeBlock);
 
     while (std::cin.good())
     {
-        std::cin.read(reinterpret_cast<char *> (CipherBlock.data()), CipherBlock.size());
-        Signer.update(CipherBlock.data(), std::cin.gcount());
-        SymCipher->cipher(CipherBlock.data(), CipherBlock.data(), std::cin.gcount());
+        std::cin.read(reinterpret_cast<char *> (DataBlock.data()), DataBlock.size());
+        Signer.update(DataBlock.data(), std::cin.gcount());
+        SymCipher->cipher(DataBlock.data(), CipherBlock.data(), std::cin.gcount());
         fileOut.write(reinterpret_cast<char *> (CipherBlock.data()), std::cin.gcount());
         if (!fileOut.good())
             throw std::range_error("failed to write cipher block");
@@ -159,14 +164,16 @@ static void encrypt (const std::string &signBaseName,
 
 
 static void decrypt (const std::string &wrapBaseName,
-    const std::string &signBaseName, std::istream &fileIn, bool verify = false)
+    const std::string &signBaseName, std::istream &fileIn,
+    const std::string &passphrase,
+    bool verify = false)
 {
     Botan::AutoSeeded_RNG PRNG;
 
     std::unique_ptr<Botan::Public_Key> SignKey(
         Botan::X509::load_key(signBaseName + "_pub_ed25519.pem"));
     std::unique_ptr<Botan::Private_Key> WrapKey(
-        Botan::PKCS8::load_key(wrapBaseName + "_priv_rsa.pem", PRNG));
+        Botan::PKCS8::load_key(wrapBaseName + "_priv_rsa.pem", PRNG, passphrase));
 
     uint32_t u32WrappedSize = 0;
     uint32_t u32SigSize = 0;
@@ -215,7 +222,7 @@ static void decrypt (const std::string &wrapBaseName,
     while (fileIn.good())
     {
         fileIn.read(reinterpret_cast<char *> (CipherBlock.data()), CipherBlock.size());
-        SymCipher->cipher(CipherBlock.data(), CipherBlock.data(), fileIn.gcount());
+        SymCipher->cipher1(CipherBlock.data(), fileIn.gcount());
         Verifier.update(CipherBlock.data(), fileIn.gcount());
         if (!verify)
         {
@@ -304,6 +311,37 @@ static void checksig (const std::string &signBaseName,
 }
 
 
+static void keycheck (const std::string &baseName,
+    const std::string &passphrase)
+{
+    Botan::AutoSeeded_RNG PRNG;
+
+    std::unique_ptr<Botan::Private_Key> SignKey(
+        Botan::PKCS8::load_key(baseName + "_priv_ed25519.pem", PRNG));
+    std::unique_ptr<Botan::Private_Key> WrapKey(
+        Botan::PKCS8::load_key(baseName + "_priv_rsa.pem", PRNG, passphrase));
+
+    if (!dynamic_cast<Botan::Ed25519_PrivateKey *> (SignKey.get())->check_key(PRNG, true))
+        throw std::domain_error("Ed25519 key check failed");
+    if (!dynamic_cast<Botan::RSA_PrivateKey *> (WrapKey.get())->check_key(PRNG, true))
+        throw std::domain_error("RSA key check failed");
+}
+
+
+static void change_passphrase (const std::string &baseName,
+    const std::string &oldPhrase, const std::string &newPhrase)
+{
+    Botan::AutoSeeded_RNG PRNG;
+
+    std::unique_ptr<Botan::Private_Key> WrapKey(
+        Botan::PKCS8::load_key(baseName + "_priv_rsa.pem", PRNG, oldPhrase));
+
+    std::ofstream PrivFileRSA(baseName + "_priv_rsa.pem",
+        std::ios_base::out | std::ios_base::binary | std::ios_base::trunc);
+    PrivFileRSA << Botan::PKCS8::PEM_encode(*WrapKey, PRNG, newPhrase);
+}
+
+
 static void print_help (const char *execname)
 {
     std::cerr << execname << " command args..." << std::endl;
@@ -313,6 +351,34 @@ static void print_help (const char *execname)
     std::cerr << "\tverify <own basename> <sender basename> [input filename]" << std::endl;
     std::cerr << "\tmakesig <own basename> <file to sign>" << std::endl;
     std::cerr << "\tchecksig <sender basename> <signed file>" << std::endl;
+    std::cerr << "\tkeycheck <basename>" << std::endl;
+    std::cerr << "\tpassphrase <basename>" << std::endl;
+}
+
+
+static std::string get_passphrase (
+    const std::string &prompt = std::string("Passphrase: "))
+{
+    struct termios termp;
+    std::string passphrase;
+
+    std::cerr << prompt;
+
+    if (tcgetattr(STDIN_FILENO, &termp))
+        throw std::runtime_error("tcgetattr() failed");
+    termp.c_lflag &= ~ECHO;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &termp))
+        throw std::runtime_error("tcsetattr() failed");
+
+    std::cin >> passphrase;
+
+    termp.c_lflag |= ECHO;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &termp))
+        throw std::runtime_error("tcsetattr() failed");
+
+    std::cerr << std::endl;
+
+    return passphrase;
 }
 
 
@@ -329,7 +395,7 @@ int main (int argc, char *argv[])
         std::string Cmd(argv[1]);
 
         if (Cmd == "keygen" && argc == 3)
-            keygen(std::string(argv[2]));
+            keygen(std::string(argv[2]), get_passphrase());
         else if (Cmd == "encrypt" && argc == 4)
             encrypt(std::string(argv[2]), std::string(argv[3]), std::cout);
         else if (Cmd == "encrypt" && argc == 5)
@@ -339,25 +405,39 @@ int main (int argc, char *argv[])
             encrypt(std::string(argv[2]), std::string(argv[3]), fileOut);
         }
         else if (Cmd == "decrypt" && argc == 4)
-            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin);
+            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin,
+                get_passphrase());
         else if (Cmd == "decrypt" && argc == 5)
         {
             std::ifstream fileIn(argv[4],
                 std::ios_base::in | std::ios_base::binary);
-            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn);
+            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn,
+                get_passphrase());
         }
         else if (Cmd == "verify" && argc == 4)
-            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin, true);
+            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin,
+                get_passphrase(), true);
         else if (Cmd == "verify" && argc == 5)
         {
             std::ifstream fileIn(argv[4],
                 std::ios_base::in | std::ios_base::binary);
-            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn, true);
+            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn,
+                get_passphrase(), true);
         }
         else if (Cmd == "makesig" && argc == 4)
             makesig(std::string(argv[2]), std::string(argv[3]));
         else if (Cmd == "checksig" && argc == 4)
             checksig(std::string(argv[2]), std::string(argv[3]));
+        else if (Cmd == "keycheck" && argc == 3)
+            keycheck(std::string(argv[2]), get_passphrase());
+        else if (Cmd == "passphrase" && argc == 3)
+        {
+            std::string oldPhrase =
+                get_passphrase(std::string("Old passphrase: "));
+            std::string newPhrase =
+                get_passphrase(std::string("New passphrase: "));
+            change_passphrase(std::string(argv[2]), oldPhrase, newPhrase);
+        }
         else
             print_help(argv[0]);
     }
