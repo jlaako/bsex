@@ -2,7 +2,7 @@ bsex - Botan based stream cipher utility
 ========================================
 
 bsex is a small utility based on cryptographic functions provided by `Botan`_
-library to perform encryption and decryption of file streams/pipes on posix
+library to perform encryption and decryption of file streams/pipes on POSIX
 style systems.
 
 Design
