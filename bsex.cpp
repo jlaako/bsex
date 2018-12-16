@@ -30,8 +30,11 @@
 
 #include <termios.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #include <vector>
@@ -54,8 +57,15 @@
 #include <botan/ctr.h>
 
 
+#define BSEX_SUBDIR             "/.bsex/"
+#define BSEX_BASENAME           "own"
+
+
 static void keygen (const std::string &baseName, const std::string &passphrase)
 {
+    std::string privRSA(baseName + "_priv_rsa.pem");
+    std::string privEd25519(baseName + "_priv_ed25519.pem");
+
     Botan::AutoSeeded_RNG PRNG;
 
     Botan::RSA_PrivateKey KeyPairRSA(PRNG, 4096);
@@ -64,8 +74,9 @@ static void keygen (const std::string &baseName, const std::string &passphrase)
     // we don't truncate on purpose to avoid accidentally overwriting keys
     std::ofstream PubFileRSA(baseName + "_pub_rsa.pem",
         std::ios_base::out | std::ios_base::binary);
-    std::ofstream PrivFileRSA(baseName + "_priv_rsa.pem",
+    std::ofstream PrivFileRSA(privRSA,
         std::ios_base::out | std::ios_base::binary);
+    chmod(privRSA.c_str(), 0600);
     PubFileRSA << Botan::X509::PEM_encode(KeyPairRSA);
     // unwrap key is encrypted
     PrivFileRSA << Botan::PKCS8::PEM_encode(KeyPairRSA, PRNG, passphrase);
@@ -76,8 +87,9 @@ static void keygen (const std::string &baseName, const std::string &passphrase)
     // we don't truncate on purpose to avoid accidentally overwriting keys
     std::ofstream PubFileEd25519(baseName + "_pub_ed25519.pem",
         std::ios_base::out | std::ios_base::binary);
-    std::ofstream PrivFileEd25519(baseName + "_priv_ed25519.pem",
+    std::ofstream PrivFileEd25519(privEd25519,
         std::ios_base::out | std::ios_base::binary);
+    chmod(privEd25519.c_str(), 0600);
     PubFileEd25519 << Botan::X509::PEM_encode(KeyPairEd25519);
     PrivFileEd25519 << Botan::PKCS8::PEM_encode(KeyPairEd25519);
 }
@@ -345,14 +357,14 @@ static void change_passphrase (const std::string &baseName,
 static void print_help (const char *execname)
 {
     std::cerr << execname << " command args..." << std::endl;
-    std::cerr << "\tkeygen <basename>" << std::endl;
-    std::cerr << "\tencrypt <own basename> <recipient basename> [output filename]" << std::endl;
-    std::cerr << "\tdecrypt <own basename> <sender basename> [input filename]" << std::endl;
-    std::cerr << "\tverify <own basename> <sender basename> [input filename]" << std::endl;
-    std::cerr << "\tmakesig <own basename> <file to sign>" << std::endl;
-    std::cerr << "\tchecksig <sender basename> <signed file>" << std::endl;
-    std::cerr << "\tkeycheck <basename>" << std::endl;
-    std::cerr << "\tpassphrase <basename>" << std::endl;
+    std::cerr << "\tkeygen" << std::endl;
+    std::cerr << "\tencrypt <recipient> [output filename]" << std::endl;
+    std::cerr << "\tdecrypt <sender> <input filename>" << std::endl;
+    std::cerr << "\tverify <sender> <input filename>" << std::endl;
+    std::cerr << "\tmakesig <file to sign>" << std::endl;
+    std::cerr << "\tchecksig <sender> <signed file>" << std::endl;
+    std::cerr << "\tkeycheck [basename]" << std::endl;
+    std::cerr << "\tpassphrase [basename]" << std::endl;
 }
 
 
@@ -392,51 +404,75 @@ int main (int argc, char *argv[])
             return 1;
         }
 
+        std::string Home(std::getenv("HOME"));
+        std::string KeyPath(Home + std::string(BSEX_SUBDIR));
+        std::string OwnBase(KeyPath + std::string(BSEX_BASENAME));
         std::string Cmd(argv[1]);
 
-        if (Cmd == "keygen" && argc == 3)
-            keygen(std::string(argv[2]), get_passphrase());
+        if (access(KeyPath.c_str(), R_OK | X_OK))
+        {
+            if (mkdir(KeyPath.c_str(), 0700))
+            {
+                throw std::runtime_error(
+                    std::string("mkdir(): ") +
+                    std::string(strerror(errno)));
+            }
+        }
+
+        if (Cmd == "keygen" && argc == 2)
+            keygen(OwnBase, get_passphrase());
+        else if (Cmd == "encrypt" && argc == 3)
+            encrypt(OwnBase, KeyPath + std::string(argv[2]), std::cout);
         else if (Cmd == "encrypt" && argc == 4)
-            encrypt(std::string(argv[2]), std::string(argv[3]), std::cout);
-        else if (Cmd == "encrypt" && argc == 5)
         {
-            std::ofstream fileOut(argv[4],
+            std::ofstream fileOut(argv[3],
                 std::ios_base::out | std::ios_base::binary | std::ios_base::trunc);
-            encrypt(std::string(argv[2]), std::string(argv[3]), fileOut);
+            encrypt(OwnBase, KeyPath + std::string(argv[2]), fileOut);
         }
+        /*else if (Cmd == "decrypt" && argc == 3)
+            decrypt(OwnBase, KeyPath + std::string(argv[2]), std::cin,
+                get_passphrase());*/
         else if (Cmd == "decrypt" && argc == 4)
-            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin,
-                get_passphrase());
-        else if (Cmd == "decrypt" && argc == 5)
         {
-            std::ifstream fileIn(argv[4],
+            std::ifstream fileIn(argv[3],
                 std::ios_base::in | std::ios_base::binary);
-            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn,
+            decrypt(OwnBase, KeyPath + std::string(argv[2]), fileIn,
                 get_passphrase());
         }
+        /*else if (Cmd == "verify" && argc == 3)
+            decrypt(OwnBase, KeyPath + std::string(argv[2]), std::cin,
+                get_passphrase(), true);*/
         else if (Cmd == "verify" && argc == 4)
-            decrypt(std::string(argv[2]), std::string(argv[3]), std::cin,
-                get_passphrase(), true);
-        else if (Cmd == "verify" && argc == 5)
         {
-            std::ifstream fileIn(argv[4],
+            std::ifstream fileIn(argv[3],
                 std::ios_base::in | std::ios_base::binary);
-            decrypt(std::string(argv[2]), std::string(argv[3]), fileIn,
+            decrypt(OwnBase, KeyPath + std::string(argv[2]), fileIn,
                 get_passphrase(), true);
         }
-        else if (Cmd == "makesig" && argc == 4)
-            makesig(std::string(argv[2]), std::string(argv[3]));
+        else if (Cmd == "makesig" && argc == 3)
+            makesig(OwnBase, std::string(argv[2]));
         else if (Cmd == "checksig" && argc == 4)
-            checksig(std::string(argv[2]), std::string(argv[3]));
+            checksig(KeyPath + std::string(argv[2]), std::string(argv[3]));
+        else if (Cmd == "keycheck" && argc == 2)
+            keycheck(OwnBase, get_passphrase());
         else if (Cmd == "keycheck" && argc == 3)
-            keycheck(std::string(argv[2]), get_passphrase());
+            keycheck(KeyPath + std::string(argv[2]), get_passphrase());
+        else if (Cmd == "passphrase" && argc == 2)
+        {
+            std::string oldPhrase =
+                get_passphrase(std::string("Old passphrase: "));
+            std::string newPhrase =
+                get_passphrase(std::string("New passphrase: "));
+            change_passphrase(OwnBase, oldPhrase, newPhrase);
+        }
         else if (Cmd == "passphrase" && argc == 3)
         {
             std::string oldPhrase =
                 get_passphrase(std::string("Old passphrase: "));
             std::string newPhrase =
                 get_passphrase(std::string("New passphrase: "));
-            change_passphrase(std::string(argv[2]), oldPhrase, newPhrase);
+            change_passphrase(KeyPath + std::string(argv[2]),
+                oldPhrase, newPhrase);
         }
         else
             print_help(argv[0]);
