@@ -52,13 +52,15 @@ cannot extract the backup after it has been created and backup target media
 can be unsafe. Likewise, recipient can extract the backup and verify that it
 indeed was delivered unmodified from the backup user.
 
-.. code::
-tar -c -f - myfolder | pxz -9 -c | bsex encrypt myrecipient /media/unsafe/mybackup.tar.xz.bsex
+::
+
+  tar -c -f - myfolder | pxz -9 -c | bsex encrypt myrecipient /media/unsafe/mybackup.tar.xz.bsex
 
 Following command line extracts the backup from backup user "mysender".
 
-.. code::
-bsex decrypt mysender /media/unsafe/backup.tar.xz.bsex | pxz -d -c | tar -x -f -
+::
+
+  bsex decrypt mysender /media/unsafe/backup.tar.xz.bsex | pxz -d -c | tar -x -f -
 
 
 .. _Botan: https://botan.randombit.net
