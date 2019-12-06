@@ -43,7 +43,6 @@
 #include <fstream>
 
 #include <botan/version.h>
-#include <botan/init.h>
 #include <botan/types.h>
 #include <botan/secmem.h>
 #include <botan/rng.h>
