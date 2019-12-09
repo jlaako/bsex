@@ -403,9 +403,12 @@ int main (int argc, char *argv[])
             return 1;
         }
 
+        const char *identity = std::getenv("IDENTITY");
         std::string Home(std::getenv("HOME"));
+        std::string OwnBaseName(
+            (identity != NULL) ? identity : BSEX_BASENAME);
         std::string KeyPath(Home + std::string(BSEX_SUBDIR));
-        std::string OwnBase(KeyPath + std::string(BSEX_BASENAME));
+        std::string OwnBase(KeyPath + OwnBaseName);
         std::string Cmd(argv[1]);
 
         if (access(KeyPath.c_str(), R_OK | X_OK))
