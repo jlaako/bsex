@@ -356,7 +356,7 @@ static void change_passphrase (const std::string &baseName,
 static void print_help (const char *execname)
 {
     std::cerr << execname << " command args..." << std::endl;
-    std::cerr << "\tkeygen" << std::endl;
+    std::cerr << "\tkeygen [basename]" << std::endl;
     std::cerr << "\tencrypt <recipient> [output filename]" << std::endl;
     std::cerr << "\tdecrypt <sender> <input filename>" << std::endl;
     std::cerr << "\tverify <sender> <input filename>" << std::endl;
