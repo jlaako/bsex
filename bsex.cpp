@@ -423,6 +423,8 @@ int main (int argc, char *argv[])
 
         if (Cmd == "keygen" && argc == 2)
             keygen(OwnBase, get_passphrase());
+        else if (Cmd == "keygen" && argc == 3)
+            keygen(KeyPath + std::string(argv[2]), get_passphrase());
         else if (Cmd == "encrypt" && argc == 3)
             encrypt(OwnBase, KeyPath + std::string(argv[2]), std::cout);
         else if (Cmd == "encrypt" && argc == 4)
