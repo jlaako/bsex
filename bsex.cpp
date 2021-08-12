@@ -1,7 +1,7 @@
 /*
 
     bsex - Botan based stream cipher utility for backup encryption
-    Copyright (C) 2018 Jussi Laako
+    Copyright (C) 2018-2021 Jussi Laako
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions are met:
@@ -53,7 +53,7 @@
 #include <botan/x509_key.h>
 #include <botan/x509_obj.h>
 #include <botan/pkcs8.h>
-#include <botan/ctr.h>
+#include <botan/stream_cipher.h>
 
 
 #define BSEX_SUBDIR             "/.bsex/"
@@ -94,6 +94,43 @@ static void keygen (const std::string &baseName, const std::string &passphrase)
 }
 
 
+static void keygen2 (const std::string &baseName, const std::string &passphrase)
+{
+    std::string privRSA(baseName + "_priv_rsa.pem");
+    std::string privEd25519(baseName + "_priv_ed25519.pem");
+
+    Botan::AutoSeeded_RNG PRNG;
+
+    Botan::RSA_PrivateKey KeyPairRSA(PRNG, 4096);
+    if (!KeyPairRSA.check_key(PRNG, true))
+        throw std::domain_error("RSA key check failed");
+    // we don't truncate on purpose to avoid accidentally overwriting keys
+    std::ofstream PubFileRSA(baseName + "_pub_rsa.pem",
+        std::ios_base::out | std::ios_base::binary);
+    std::ofstream PrivFileRSA(privRSA,
+        std::ios_base::out | std::ios_base::binary);
+    chmod(privRSA.c_str(), 0600);
+    PubFileRSA << Botan::X509::PEM_encode(KeyPairRSA);
+    // unwrap key is encrypted
+    PrivFileRSA << Botan::PKCS8::PEM_encode(KeyPairRSA,
+        PRNG, passphrase);
+
+    Botan::Ed25519_PrivateKey KeyPairEd25519(PRNG);
+    if (!KeyPairEd25519.check_key(PRNG, true))
+        throw std::domain_error("Ed25519 key check failed");
+    // we don't truncate on purpose to avoid accidentally overwriting keys
+    std::ofstream PubFileEd25519(baseName + "_pub_ed25519.pem",
+        std::ios_base::out | std::ios_base::binary);
+    std::ofstream PrivFileEd25519(privEd25519,
+        std::ios_base::out | std::ios_base::binary);
+    chmod(privEd25519.c_str(), 0600);
+    PubFileEd25519 << Botan::X509::PEM_encode(KeyPairEd25519);
+    // encrypt also signing key
+    PrivFileEd25519 << Botan::PKCS8::PEM_encode(KeyPairEd25519,
+        PRNG, passphrase);
+}
+
+
 static void encrypt (const std::string &signBaseName,
     const std::string &wrapBaseName, std::ostream &fileOut)
 {
@@ -105,7 +142,7 @@ static void encrypt (const std::string &signBaseName,
         Botan::X509::load_key(wrapBaseName + "_pub_rsa.pem"));
 
     std::unique_ptr<Botan::StreamCipher> SymCipher(
-        Botan::CTR_BE::create_or_throw("CTR(AES-256)"));
+        Botan::StreamCipher::create_or_throw("CTR(AES-256)"));
     Botan::secure_vector<uint8_t> SymKey(
         PRNG.random_vec(SymCipher->maximum_keylength()));
     Botan::secure_vector<uint8_t> SymIV(
@@ -222,7 +259,7 @@ static void decrypt (const std::string &wrapBaseName,
     fprintf(stderr, "keysize=%lu, ivsize=%lu, sigsize=%lu\n",
         SymKey.size(), SymIV.size(), Signature.size());
     std::unique_ptr<Botan::StreamCipher> SymCipher(
-        Botan::CTR_BE::create_or_throw("CTR(AES-256)"));
+        Botan::StreamCipher::create_or_throw("CTR(AES-256)"));
     SymCipher->set_key(SymKey);
     SymCipher->set_iv(SymIV.data(), SymIV.size());
 
@@ -353,10 +390,32 @@ static void change_passphrase (const std::string &baseName,
 }
 
 
+static void change_passphrase2 (const std::string &baseName,
+    const std::string &oldPhrase, const std::string &newPhrase)
+{
+    Botan::AutoSeeded_RNG PRNG;
+
+    std::unique_ptr<Botan::Private_Key> SignKey(
+        Botan::PKCS8::load_key(baseName + "_priv_ed25519.pem",
+            PRNG, oldPhrase));
+    std::unique_ptr<Botan::Private_Key> WrapKey(
+        Botan::PKCS8::load_key(baseName + "_priv_rsa.pem",
+            PRNG, oldPhrase));
+
+    std::ofstream PrivFileEd25519(baseName + "_priv_ed25519.pem",
+        std::ios_base::out | std::ios_base::binary | std::ios_base::trunc);
+    std::ofstream PrivFileRSA(baseName + "_priv_rsa.pem",
+        std::ios_base::out | std::ios_base::binary | std::ios_base::trunc);
+    PrivFileEd25519 << Botan::PKCS8::PEM_encode(*SignKey, PRNG, newPhrase);
+    PrivFileRSA << Botan::PKCS8::PEM_encode(*WrapKey, PRNG, newPhrase);
+}
+
+
 static void print_help (const char *execname)
 {
     std::cerr << execname << " command args..." << std::endl;
     std::cerr << "\tkeygen [basename]" << std::endl;
+    std::cerr << "\tkeygen2 [basename]" << std::endl;
     std::cerr << "\tencrypt <recipient> [output filename]" << std::endl;
     std::cerr << "\tdecrypt <sender> <input filename>" << std::endl;
     std::cerr << "\tverify <sender> <input filename>" << std::endl;
@@ -364,6 +423,7 @@ static void print_help (const char *execname)
     std::cerr << "\tchecksig <sender> <signed file>" << std::endl;
     std::cerr << "\tkeycheck [basename]" << std::endl;
     std::cerr << "\tpassphrase [basename]" << std::endl;
+    std::cerr << "\tpassphrase2 [basename]" << std::endl;
 }
 
 
@@ -425,6 +485,10 @@ int main (int argc, char *argv[])
             keygen(OwnBase, get_passphrase());
         else if (Cmd == "keygen" && argc == 3)
             keygen(KeyPath + std::string(argv[2]), get_passphrase());
+        else if (Cmd == "keygen2" && argc == 2)
+            keygen2(OwnBase, get_passphrase());
+        else if (Cmd == "keygen2" && argc == 3)
+            keygen2(KeyPath + std::string(argv[2]), get_passphrase());
         else if (Cmd == "encrypt" && argc == 3)
             encrypt(OwnBase, KeyPath + std::string(argv[2]), std::cout);
         else if (Cmd == "encrypt" && argc == 4)
@@ -476,6 +540,23 @@ int main (int argc, char *argv[])
             std::string newPhrase =
                 get_passphrase(std::string("New passphrase: "));
             change_passphrase(KeyPath + std::string(argv[2]),
+                oldPhrase, newPhrase);
+        }
+        else if (Cmd == "passphrase2" && argc == 2)
+        {
+            std::string oldPhrase =
+                get_passphrase(std::string("Old passphrase: "));
+            std::string newPhrase =
+                get_passphrase(std::string("New passphrase: "));
+            change_passphrase2(OwnBase, oldPhrase, newPhrase);
+        }
+        else if (Cmd == "passphrase2" && argc == 3)
+        {
+            std::string oldPhrase =
+                get_passphrase(std::string("Old passphrase: "));
+            std::string newPhrase =
+                get_passphrase(std::string("New passphrase: "));
+            change_passphrase2(KeyPath + std::string(argv[2]),
                 oldPhrase, newPhrase);
         }
         else
