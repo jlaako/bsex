@@ -1,9 +1,9 @@
 CXX = g++
-CXXFLAGS = -mtune=generic -O3 -pthread
+CXXFLAGS = -mtune=generic -O3 -pthread -flto
 CXXFLAGS += `pkg-config --cflags botan-2`
 DEFS = -D_LARGEFILE64_SOURCE -D_REENTRANT -D_THREAD_SAFE
 INCS =
-LDFLAGS = -pthread -O3
+LDFLAGS = -pthread -O3 -flto
 LIBS = `pkg-config --libs botan-2`
 
 DESTDIR = /usr/local
