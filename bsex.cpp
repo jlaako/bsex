@@ -556,7 +556,7 @@ int main (int argc, char *argv[])
                 get_passphrase(std::string("Old passphrase: "));
             std::string newPhrase =
                 get_passphrase(std::string("New passphrase: "));
-            change_passphrase2(KeyPath + std::string(argv[2]),
+            change_passphrase2(std::string(argv[2]),
                 oldPhrase, newPhrase);
         }
         else
